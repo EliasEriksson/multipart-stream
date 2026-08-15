@@ -1,5 +1,10 @@
 {
+  "type": "module",
+  "scripts": {
+    "request": "python client.py",
+    "start": "node server.js"
+  },
   "dependencies": {
-    "@fastify/busboy": "^3.2.1"
+    "mixpart": "^0.0.6"
   }
 }

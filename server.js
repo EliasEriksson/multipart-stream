@@ -1,10 +1,114 @@
 import http from "node:http";
-import Busboy from "@fastify/busboy";
+import { Readable } from "node:stream";
+import { parseMultipartStream } from "mixpart";
+
+let id = 0;
+function getId() {
+    return id++;
+}
+
+const server = http.createServer(async (request, response) => {
+    const id = getId();
+    console.log(`Request ${id} started...`)
+    if (request.url !== "/import") {
+        const message = `location ${request.url} not found`;
+        console.log(`Request ${id}: ${message}`);
+        response.writeHead(404, {
+            "Content-Type": "text/plain"
+        });
+        response.end(`${message}\n`);
+        return;
+    }
+    if (request.method !== "POST") {
+        const message = `method ${request.method} not allowed`;
+        console.log(`Request ${id}: ${message}`);
+        response.writeHead(405, {
+            "Content-Type": "text/plain",
+        });
+        response.end(`${message}\n`);
+        return;
+    }
+    const contentType = request.headers["content-type"];
+    if (!contentType?.match(/.*(multipart)[^\/]*\/.*(mixed).*/)) {
+        const message = `Expected Content-Type multipart/mixed received ${contentType}`;
+        console.log(`Request ${id}: ${message}`);
+        response.writeHead(400, {
+            "Content-Type": "text/plain",
+        });
+        response.end(`${message}\n`);
+        return;
+    }
+    await handleRequest(id, request, contentType, response);
+});
+
+/**
+ * @param {number} id
+ * @param {import("node:http").IncomingMessage} request
+ * @param {string} contentType
+ * @param {import("node:http").ServerResponse} response
+ */
+async function handleRequest(id, request, contentType, response) {
+    console.log(`Request ${id}: Processing request...`);
+    console.log(`Request ${id}: Request headers:`, request.headers);
+
+    const multipartResponse = new Response(Readable.toWeb(request), {
+        headers: { "Content-Type": contentType },
+    });
+    try {
+        let messageId = 0;
+       for await (const message of parseMultipartStream(multipartResponse)) {
+           await processMessage(id, messageId++, message);
+       }
+       const message = "OK";
+       console.log(`Request ${id}: ${message}`);
+       response.writeHead(200, {
+            "content-type": "text/plain",
+        });
+        response.end(`${message}\n`);
+    } catch (error) {
+        const message = `Invalid multipart request`;
+        console.log(`Request ${id}: ${message}`);
+        console.error(error);
+        response.writeHead(400, {
+            "content-type": "text/plain"
+        });
+        response.end(`${message}\n`);
+    }
+}
+
+/**
+ * @param {number} id
+ * @param {number} messageId
+ * @param {import("mixpart").MultipartMessage} message
+ * @returns {Promise<void>}
+ */
+async function processMessage(id, messageId, message) {
+    let content = "";
+    const decoder = new TextDecoder("utf8");
+    for await (const chunk of base64Decode(message.payload)) {
+        content += decoder.decode(chunk, { stream: true})
+    }
+    content += decoder.decode();
+    const headers = Array.from(message.headers.entries(), ([name, value]) => `${name}: ${value}`).join("\n");
+    const heading = `---------- Batch ${id} message ${messageId} ----------`
+    const log = [
+         heading,
+        headers,
+        "\n",
+        content,
+        "-".repeat(heading.length)
+    ].join("\n")
+    console.log(log);
+}
+
+
+
 
 async function*base64Decode(source) {
+    const asciiDecoder = new TextDecoder("ascii");
     let remainder = "";
     for await (const chunk of source) {
-        const data = remainder + new TextDecoder().decode(chunk);
+        const data = remainder + asciiDecoder.decode(chunk, { stream: true});
         const length = data.length - (data.length % 4);
         if (length > 0) {
             yield Uint8Array.from(
@@ -14,6 +118,7 @@ async function*base64Decode(source) {
         }
         remainder = data.slice(length);
     }
+    remainder += asciiDecoder.decode();
     if (remainder.length > 0) {
         yield Uint8Array.from(
             atob(remainder),
@@ -22,50 +127,6 @@ async function*base64Decode(source) {
     }
 }
 
-/**
- * @param {import("@fastify/busboy").BusboyFileStream} file
- * @returns {Promise<void>}
- */
-async function processFile(file) {
-    const chunks = [];
-    for await (const chunk of base64Decode(file)) {
-        chunks.push(chunk);
-    }
-    const length = chunks.reduce((result, chunk) => result + chunk.byteLength, 0)
-    const bytes = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of chunks) {
-        bytes.set(chunk, offset)
-        offset += chunk.byteLength;
-    }
-    const text = new TextDecoder("utf-8").decode(bytes);
-    console.log(text);
-}
-
-
-const server = http.createServer((request, response) => {
-    if (request.url !== "/import") {
-        response.writeHead(404);
-        response.end("Not found\n");
-        return;
-    }
-    if (request.method !== "POST") {
-        response.statusCode = 405;
-        response.end("Method not allowed\n");
-    }
-    const contentType = request.headers["content-type"];
-    if (!contentType.match(/.*(multipart)[^\/]*\/.*(form-data).*/)) {
-        response.writeHead(400);
-        response.end("Expected content-type multipart/form-data\n");
-        return;
-    }
-    const reader = Busboy({
-        headers: request.headers,
-    })
-    reader.on("file", (fieldName, file, info) => {
-        processFile(file).catch(error => {
-            console.error(error);
-            file.resume();
-        })
-    })
-})
+server.listen(8080, () => {
+    console.log("Listening on port 8080");
+});
