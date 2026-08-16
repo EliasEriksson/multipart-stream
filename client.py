@@ -7,6 +7,9 @@ import base64
 import tempfile
 import contextlib
 from pathlib import Path
+import uuid
+import sys
+import functools
 
 
 class File:
@@ -40,25 +43,67 @@ async def stream_io(file: Path, chunk_size: int) -> t.AsyncGenerator[bytes, None
             yield chunk
 
 
-async def main(files: t.Iterable[File]) -> None:
-    writer = aiohttp.MultipartWriter("mixed")
-    for file in files:
-        writer.append(
-            aiohttp.AsyncIterablePayload(
-                stream_base64(
-                    stream_io(file.path, 16),
-                )
-            ),
-            file.meta,
-        )
+class Payload:
+    _boundary: str
+
+    def __init__(self) -> None:
+        self._boundary = uuid.uuid4().hex
+
+    @functools.cached_property
+    def boundary(self) -> bytes:
+        return self._boundary.encode("ascii")
+
+    @functools.cached_property
+    def open_boundary(self) -> bytes:
+        return b"--%s\r\n" % self.boundary
+
+    @functools.cached_property
+    def close_boundary(self) -> bytes:
+        return b"--%s--\r\n" % self.boundary
+
+    @property
+    def headers(self) -> t.Mapping[str, str]:
+        return {"Content-Type": f"multipart/mixed; boundary={self._boundary}"}
+
+    async def from_files(
+        self, files: t.Iterable[File]
+    ) -> t.AsyncGenerator[bytes, None]:
+        index = 0
+        for file in files:
+            yield self.open_boundary
+            headers = b"".join(
+                f"{key}: {value}\r\n".encode("latin1")
+                for key, value in {
+                    **file.meta,
+                    f"Content-Disposition": f"attachment; filename*=UTF-8''{file.path.name}",
+                    f"Content-Transfer-Encoding": f"base64",
+                }.items()
+            )
+            yield b"%s\r\n" % headers
+            stream = stream_base64(
+                stream_io(file.path, 16),
+            )
+            async for chunk in stream:
+                yield chunk
+            yield b"\r\n"
+            index += 1
+        yield self.close_boundary
+
+
+async def main(port: str, files: t.Iterable[File]) -> None:
+    payload = Payload()
     async with aiohttp.ClientSession() as session:
         async with session.post(
-            f"http://localhost:8080/import", data=writer, chunked=True
+            f"http://localhost:{port}/import",
+            data=payload.from_files(files),
+            headers=payload.headers,
+            chunked=True,
         ) as response:
             print(response.status, await response.text())
 
 
 if __name__ == "__main__":
+    port = sys.argv[1] if len(sys.argv) > 1 else "8080"
 
     class FileData:
         def __init__(
@@ -82,7 +127,6 @@ if __name__ == "__main__":
                 meta={
                     "Content-Type": "text/plain; charset=utf-8",
                     "custom-header": "foo",
-                    "Content-Disposition": "attachment; filename*=UTF-8''foo.txt",
                 },
             ),
             FileData(
@@ -91,7 +135,6 @@ if __name__ == "__main__":
                 meta={
                     "Content-Type": "text/plain; charset=utf-8",
                     "custom-header": "bar",
-                    "Content-Disposition": "attachment; filename*=UTF-8''bar.txt",
                 },
             ),
             FileData(
@@ -100,7 +143,6 @@ if __name__ == "__main__":
                 meta={
                     "Content-Type": "text/plain; charset=utf-8",
                     "custom-header": "baz",
-                    "Content-Disposition": "attachment; filename*=UTF-8''baz.txt",
                 },
             ),
         ]
@@ -110,4 +152,4 @@ if __name__ == "__main__":
             with open((path := directory / file.name), "w") as descriptor:
                 descriptor.write(file.content)
             files.append(File(path, meta=file.meta))
-        asyncio.run(main(files))
+        asyncio.run(main(port, (file for file in files)))

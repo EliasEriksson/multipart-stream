@@ -2,6 +2,7 @@
   "type": "module",
   "scripts": {
     "request": "python client.py",
+    "echo": "node echo.js",
     "start": "node server.js"
   },
   "dependencies": {

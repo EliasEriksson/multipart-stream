@@ -83,20 +83,25 @@ async function handleRequest(id, request, contentType, response) {
  * @returns {Promise<void>}
  */
 async function processMessage(id, messageId, message) {
-    let content = "";
+    let contentBlock = "";
+    const headers = Object.fromEntries(Array.from(message.headers.entries(), ([key, value]) => [key.toLowerCase(), value]));
+    const contentTransferEncoding = headers["content-transfer-encoding"];
+    const stream = contentTransferEncoding?.toLowerCase() === "base64"
+        ? base64Decode(message.payload)
+        : message.payload;
     const decoder = new TextDecoder("utf8");
-    for await (const chunk of base64Decode(message.payload)) {
-        content += decoder.decode(chunk, { stream: true})
+    for await (const chunk of stream) {
+        contentBlock += decoder.decode(chunk, { stream: true})
     }
-    content += decoder.decode();
-    const headers = Array.from(message.headers.entries(), ([name, value]) => `${name}: ${value}`).join("\n");
-    const heading = `---------- Batch ${id} message ${messageId} ----------`
+    contentBlock += decoder.decode();
+    const headingBlock = `---------- Batch ${id} message ${messageId} ----------`
+    const headerBlock = Array.from(message.headers.entries(), ([name, value]) => `${name}: ${value}`).join("\n");
     const log = [
-         heading,
-        headers,
+         headingBlock,
+        headerBlock,
         "\n",
-        content,
-        "-".repeat(heading.length)
+        contentBlock,
+        "-".repeat(headingBlock.length)
     ].join("\n")
     console.log(log);
 }
